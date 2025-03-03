@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,7 @@ var (
 	ver           = flag.Bool("version", false, "Print version and exit")
 	libv2         = flag.Bool("v2", true, "Use the jd v2 library")
 	yaml          = flag.Bool("yaml", false, "Read and write YAML")
+	filterBy      = flag.String("filterBy", "", "Regex expression for output filtration")
 )
 
 func main() {
@@ -380,6 +382,13 @@ func diffV2(a, b string, options []v2.Option) (string, bool, error) {
 		return "", false, err
 	}
 	diff := aNode.Diff(bNode, options...)
+	diffFiltered := make([]v2.DiffElement, 0, len(diff))
+	for _, diffElement := range diff {
+		if !isFiltered(diffElement.Path, *filterBy) {
+			diffFiltered = append(diffFiltered, diffElement)
+		}
+	}
+	diff = diffFiltered
 	var renderOptions []v2.Option
 	if *color {
 		renderOptions = append(renderOptions, v2.COLOR)
@@ -414,6 +423,63 @@ func diffV2(a, b string, options []v2.Option) (string, bool, error) {
 		return "", false, fmt.Errorf("Invalid format: %q", *format)
 	}
 	return str, haveDiff, nil
+}
+
+func isFiltered(path v2.Path, filterBy string) bool {
+	if filterBy == "" {
+		return false
+	}
+
+	filterParts := strings.Split(filterBy, ".")
+	i, j := 0, 0
+	for i < len(filterParts) && j < len(path) {
+		part := filterParts[i]
+		isFilterNumeric, _ := regexp.MatchString(`^\d+$`, part)
+		for j < len(path) && !isFilterNumeric {
+			switch path[j].(type) {
+			case v2.PathIndex:
+				j++
+				continue
+			}
+			break
+		}
+
+		if j >= len(path) {
+			break
+		}
+
+		var pStr string
+		switch e := path[j].(type) {
+		case v2.PathKey:
+			pStr = string(e)
+		case v2.PathIndex:
+			pStr = strconv.Itoa(int(e))
+		default:
+			panic("path not castable")
+		}
+
+		if part == "*" {
+			part = ".*"
+		}
+
+		re, err := regexp.Compile(part)
+		if err != nil {
+			return true
+		}
+
+		if !re.MatchString(pStr) {
+			return true
+		}
+
+		i++
+		j++
+	}
+
+	if i == len(filterParts) {
+		return false
+	}
+
+	return true
 }
 
 func printPatch(p, a string, metadata []jd.Metadata) {
